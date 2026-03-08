@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UI Navigator — Architecture</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a25;
+  --border:#2a2a3a;--border-glow:#3a3a5a;
+  --text:#e8e8f0;--text-dim:#888899;--text-muted:#555566;
+  --flash:#00d4ff;--flash-dim:#00d4ff22;
+  --lite:#a78bfa;--lite-dim:#a78bfa22;
+  --pro:#f59e0b;
+  --green:#22c55e;--red:#ef4444;
+  --orange:#f97316;
+}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:'Instrument Sans',sans-serif;
+  display:flex;align-items:center;justify-content:center;
+  min-height:100vh;padding:40px;
+}
+body::before{
+  content:'';position:fixed;inset:0;
+  background:radial-gradient(ellipse 80% 50% at 50% -20%, #00d4ff06 0%, transparent 60%);
+  pointer-events:none;
+}
+
+.graph-container{
+  width:100%;max-width:1400px;
+  background:var(--surface);border:1px solid var(--border);border-radius:20px;
+  overflow:hidden;position:relative;
+}
+.graph-container::before{
+  content:'';position:absolute;inset:0;
+  background:
+    linear-gradient(90deg, transparent 59px, #ffffff04 60px, transparent 61px),
+    linear-gradient(0deg, transparent 59px, #ffffff04 60px, transparent 61px);
+  background-size:60px 60px;pointer-events:none;
+}
+.graph-header{
+  padding:24px 32px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  position:relative;z-index:1;
+}
+.graph-title{
+  font-family:'JetBrains Mono',monospace;font-size:13px;
+  color:var(--flash);letter-spacing:2px;text-transform:uppercase;
+}
+.graph-subtitle{font-size:13px;color:var(--text-muted);font-family:'JetBrains Mono',monospace}
+
+svg{width:100%;height:auto;display:block;position:relative;z-index:1}
+
+/* Tooltip */
+.tooltip{
+  position:fixed;background:var(--surface2);border:1px solid var(--border-glow);
+  border-radius:10px;padding:14px 18px;font-size:13px;color:var(--text);
+  pointer-events:none;z-index:200;opacity:0;transition:opacity .15s;
+  max-width:360px;box-shadow:0 8px 30px rgba(0,0,0,.6);
+  line-height:1.5;
+}
+.tooltip.show{opacity:1}
+.tooltip .tt-title{font-weight:700;margin-bottom:6px;font-size:15px}
+.tooltip .tt-model{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  margin-top:8px;padding-top:8px;border-top:1px solid var(--border);
+}
+.tooltip .tt-score{
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  margin-top:4px;color:var(--orange);
+}
+
+/* Animated flow */
+.flow-line{stroke-dasharray:8 4;animation:dash 1.5s linear infinite}
+.flow-line-slow{stroke-dasharray:8 4;animation:dash 2.5s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-24}}
+
+/* Node hover */
+.node-group{cursor:pointer}
+.node-group:hover .node-box{filter:brightness(1.3)}
+.node-box{transition:filter .2s}
+
+/* Pulse animation for orchestrator */
+@keyframes pulse-border{
+  0%,100%{stroke-opacity:.6}
+  50%{stroke-opacity:1}
+}
+.pulse-border{animation:pulse-border 2s ease-in-out infinite}
+</style>
+</head>
+<body>
+
+<div class="graph-container">
+  <div class="graph-header">
+    <div class="graph-title">UI Navigator — Architecture</div>
+    <div class="graph-subtitle">Hub-and-Spoke — Orchestrator Controls Everything</div>
+  </div>
+
+  <svg viewBox="0 0 1400 820" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <marker id="af" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#00d4ff" stroke-width="1.5"/></marker>
+      <marker id="al" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#a78bfa" stroke-width="1.5"/></marker>
+      <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#22c55e" stroke-width="1.5"/></marker>
+      <marker id="ad" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#555566" stroke-width="1.5"/></marker>
+      <marker id="ay" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#f59e0b" stroke-width="1.5"/></marker>
+      <marker id="ao" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#f97316" stroke-width="1.5"/></marker>
+    </defs>
+
+    <!-- ============ FLOW LINES ============ -->
+
+    <!-- START -> Orchestrator -->
+    <path d="M740,110 L740,390" class="flow-line" stroke="#22c55e" stroke-width="2" fill="none" opacity=".7" marker-end="url(#ag)"/>
+    <text x="750" y="250" font-family="JetBrains Mono" font-size="9" fill="#22c55e" opacity=".6">explore(url)</text>
+
+    <!-- Orchestrator -> Session Manager (get screenshot + DOM) -->
+    <path d="M650,440 C500,450 300,350 250,255" class="flow-line" stroke="#22c55e" stroke-width="2" fill="none" opacity=".5" marker-end="url(#ag)"/>
+    <text x="400" y="370" font-family="JetBrains Mono" font-size="9" fill="#22c55e" opacity=".6">screenshot() + get_page_source()</text>
+
+    <!-- Session Manager -> Orchestrator (returns data) -->
+    <path d="M250,230 C320,220 500,340 650,420" class="flow-line" stroke="#22c55e" stroke-width="1.5" fill="none" opacity=".35" marker-end="url(#ag)"/>
+    <text x="380" y="300" font-family="JetBrains Mono" font-size="9" fill="#22c55e" opacity=".4">bytes + HTML</text>
+
+    <!-- Orchestrator -> Page Analyzer (passes screenshot + DOM) -->
+    <path d="M700,390 C660,300 600,220 550,200" class="flow-line" stroke="#00d4ff" stroke-width="2" fill="none" opacity=".6" marker-end="url(#af)"/>
+    <text x="580" y="280" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".6">screenshot + DOM</text>
+
+    <!-- Page Analyzer -> Orchestrator (returns screen + actions) -->
+    <path d="M590,200 C640,260 680,340 710,390" class="flow-line" stroke="#00d4ff" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#af)"/>
+    <text x="660" y="290" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".5">screen + actions[]</text>
+
+    <!-- Orchestrator -> Firestore (read full state) -->
+    <path d="M770,470 C790,600 790,510 770,680" class="flow-line-slow" stroke="#f59e0b" stroke-width="2" fill="none" opacity=".5" marker-end="url(#ay)"/>
+    <text x="795" y="570" font-family="JetBrains Mono" font-size="9" fill="#f59e0b" opacity=".5">read state</text>
+
+    <!-- Firestore -> Orchestrator (full state) -->
+    <path d="M730,680 C710,580 710,510 720,470" class="flow-line-slow" stroke="#f59e0b" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#ay)"/>
+    <text x="690" y="570" font-family="JetBrains Mono" font-size="9" fill="#f59e0b" opacity=".4" transform="rotate(-90,690,570)">full state</text>
+
+    <!-- Orchestrator -> Firestore (write results) -->
+    <path d="M700,470 C680,550 660,640 660,680" class="flow-line-slow" stroke="#f59e0b" stroke-width="1.5" fill="none" opacity=".35" marker-end="url(#ay)"/>
+    <text x="640" y="600" font-family="JetBrains Mono" font-size="9" fill="#f59e0b" opacity=".4" transform="rotate(-80,640,600)">write results</text>
+
+    <!-- Orchestrator -> Scout (scout_guidance) -->
+    <path d="M650,430 C550,430 450,400 370,380" class="flow-line" stroke="#f97316" stroke-width="2" fill="none" opacity=".5" marker-end="url(#ao)"/>
+    <text x="470" y="395" font-family="JetBrains Mono" font-size="9" fill="#f97316" opacity=".6">scout_guidance</text>
+
+    <!-- Scout -> Orchestrator (action_id) -->
+    <path d="M370,350 C450,350 550,380 650,415" class="flow-line" stroke="#f97316" stroke-width="2" fill="none" opacity=".5" marker-end="url(#ao)"/>
+    <text x="470" y="355" font-family="JetBrains Mono" font-size="9" fill="#f97316" opacity=".6">chosen action_id</text>
+
+    <!-- Orchestrator -> Data Provider (if FILL) -->
+    <path d="M700,470 C700,530 580,540 520,540" class="flow-line" stroke="#a78bfa" stroke-width="2" fill="none" opacity=".6" marker-end="url(#al)"/>
+    <text x="620" y="520" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".6">if FILL action</text>
+
+    <!-- Data Provider -> Orchestrator (fill_value) -->
+    <path d="M520,570 C580,580 680,490 700,460" class="flow-line" stroke="#a78bfa" stroke-width="1.5" fill="none" opacity=".5" marker-end="url(#al)"/>
+    <text x="610" y="555" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".5">fill_value</text>
+
+    <!-- Orchestrator -> Navigator (ActionDoc) -->
+    <path d="M830,430 C900,430 950,380 1000,370" class="flow-line" stroke="#00d4ff" stroke-width="2" fill="none" opacity=".6" marker-end="url(#af)"/>
+    <text x="890" y="390" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".6">ActionDoc</text>
+
+    <!-- Navigator -> Session Manager (execute_code) -->
+    <path d="M1080,300 C1080,200 400,200 250,210" class="flow-line" stroke="#22c55e" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#ag)"/>
+    <text x="660" y="235" font-family="JetBrains Mono" font-size="9" fill="#22c55e" opacity=".5">execute_code(playwright)</text>
+
+    <!-- Navigator -> Orchestrator (result + screenshot_after) -->
+    <path d="M1000,380 C940,400 860,430 830,435" class="flow-line" stroke="#00d4ff" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#af)"/>
+    <text x="890" y="418" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".4">result + screenshot_after</text>
+
+    <!-- Orchestrator -> Sentinel (before + after) -->
+    <path d="M780,470 C820,550 920,600 970,610" class="flow-line" stroke="#00d4ff" stroke-width="2" fill="none" opacity=".6" marker-end="url(#af)"/>
+    <text x="850" y="560" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".6">before + after imgs</text>
+
+    <!-- Sentinel -> Orchestrator (verdict) -->
+    <path d="M970,640 C900,660 800,520 790,475" class="flow-line" stroke="#00d4ff" stroke-width="1.5" fill="none" opacity=".5" marker-end="url(#af)"/>
+    <text x="860" y="600" font-family="JetBrains Mono" font-size="9" fill="#00d4ff" opacity=".5">verdict</text>
+
+    <!-- Orchestrator -> Screen Matcher (if NEW_SCREEN) -->
+    <path d="M780,470 C820,500 870,720 920,730" class="flow-line" stroke="#a78bfa" stroke-width="2" fill="none" opacity=".5" marker-end="url(#al)"/>
+    <text x="810" y="680" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".5">if NEW_SCREEN</text>
+
+    <!-- Screen Matcher -> Orchestrator -->
+    <path d="M920,760 C860,770 760,510 750,475" class="flow-line" stroke="#a78bfa" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#al)"/>
+    <text x="800" y="730" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".4">match / no match</text>
+
+
+    <!-- ============ NODES ============ -->
+
+    <!-- START -->
+    <g>
+      <circle cx="740" cy="90" r="22" fill="none" stroke="#22c55e" stroke-width="2"/>
+      <circle cx="740" cy="90" r="8" fill="#22c55e"/>
+      <text x="740" y="60" font-family="JetBrains Mono" font-size="11" fill="#22c55e" text-anchor="middle" font-weight="600">START</text>
+      <text x="740" y="75" font-family="JetBrains Mono" font-size="9" fill="#555566" text-anchor="middle">explore(url)</text>
+    </g>
+
+    <!-- Session Manager -->
+    <g class="node-group" data-tooltip="Platform abstraction layer used by Orchestrator and Navigator. Routes to Playwright (web) or Appium (mobile future). Provides: screenshot(), get_page_source(), execute_code(), go_back(), goto(). The Orchestrator calls it to capture state; the Navigator calls it to execute actions." data-title="Session Manager" data-model="No LLM — pure Python" data-score="">
+      <rect class="node-box" x="40" y="180" width="210" height="75" rx="12" fill="#12121a" stroke="#22c55e" stroke-width="1.5"/>
+      <rect x="40" y="180" width="210" height="3" rx="1.5" fill="#22c55e"/>
+      <text x="145" y="212" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Session Manager</text>
+      <text x="145" y="230" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">web -> Playwright</text>
+      <text x="145" y="244" font-family="JetBrains Mono" font-size="10" fill="#555566" text-anchor="middle">mobile -> Appium (future)</text>
+    </g>
+
+    <!-- Page Analyzer -->
+    <g class="node-group" data-tooltip="Dual analysis: Vision (screenshot -> bounds, visibility) + DOM (HTML -> selectors, roles). Merge combines both into unified ActionDocs. Returns screen_description + actions list. Called BY the Orchestrator — receives screenshot + DOM as parameters, returns results. Does not access Session Manager or Firestore directly." data-title="Page Analyzer" data-model="Vision: FLASH | DOM: FLASH | Merge: LITE" data-score="Prompt: 7/10">
+      <rect class="node-box" x="440" y="110" width="220" height="90" rx="12" fill="#12121a" stroke="#00d4ff" stroke-width="1.5"/>
+      <rect x="440" y="110" width="220" height="3" rx="1.5" fill="#00d4ff"/>
+      <text x="550" y="143" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Page Analyzer</text>
+      <text x="550" y="161" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">Vision + DOM -> merge</text>
+      <text x="550" y="176" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">-> screen_description + actions[]</text>
+      <g transform="translate(480,182)">
+        <rect width="46" height="16" rx="4" fill="#00d4ff22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="23" y="12" text-anchor="middle" fill="#00d4ff" font-weight="600">FLASH</text>
+      </g>
+      <g transform="translate(532,182)">
+        <rect width="36" height="16" rx="4" fill="#a78bfa22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="18" y="12" text-anchor="middle" fill="#a78bfa" font-weight="600">LITE</text>
+      </g>
+    </g>
+
+    <!-- Orchestrator (hub — everything flows through here) -->
+    <g class="node-group" data-tooltip="The BRAIN and HUB. Everything flows through the Orchestrator. It: (1) creates Session Manager and calls it for screenshots/DOM, (2) passes data to Page Analyzer, (3) runs Dedup to skip duplicate actions, (4) writes results to Firestore, (5) reads full state from Firestore before every decision, (6) delegates to Scout, Data Provider, Navigator, Sentinel, Screen Matcher. Decisions: explore_current, navigate_to (replay navigation via nav_edges BFS), stop. Replay navigation resets browser to start URL and replays the action chain to reach any discovered screen." data-title="Orchestrator" data-model="FLASH — strategic reasoning" data-score="Prompt: 8/10">
+      <rect class="node-box pulse-border" x="650" y="390" width="180" height="80" rx="14" fill="#12121a" stroke="#f97316" stroke-width="2"/>
+      <rect x="650" y="390" width="180" height="3" rx="1.5" fill="#f97316"/>
+      <text x="740" y="423" font-family="Instrument Sans" font-size="15" fill="#e8e8f0" text-anchor="middle" font-weight="700">Orchestrator</text>
+      <text x="740" y="441" font-family="JetBrains Mono" font-size="10" fill="#f97316" text-anchor="middle">strategic brain + hub</text>
+      <text x="740" y="457" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">all nodes flow through here</text>
+      <g transform="translate(697,462)">
+        <rect width="46" height="16" rx="4" fill="#00d4ff22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="23" y="12" text-anchor="middle" fill="#00d4ff" font-weight="600">FLASH</text>
+      </g>
+    </g>
+
+    <!-- Scout -->
+    <g class="node-group" data-tooltip="Action-level tactician. Receives scout_guidance from Orchestrator + all actions for the screen (any status) + known screens. Picks the single best pending action to execute next. Understands forms, navigation patterns, UI element priorities." data-title="Scout" data-model="FLASH — action-level strategy" data-score="Prompt: 6/10">
+      <rect class="node-box" x="240" y="330" width="140" height="65" rx="12" fill="#12121a" stroke="#f97316" stroke-width="1.5"/>
+      <rect x="240" y="330" width="140" height="3" rx="1.5" fill="#f97316"/>
+      <text x="310" y="358" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Scout</text>
+      <text x="310" y="376" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">pick next action</text>
+      <g transform="translate(275,382)">
+        <rect width="46" height="16" rx="4" fill="#00d4ff22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="23" y="12" text-anchor="middle" fill="#00d4ff" font-weight="600">FLASH</text>
+      </g>
+    </g>
+
+    <!-- Data Provider -->
+    <g class="node-group" data-tooltip="Generates contextually relevant test data for FILL actions. Uses screen_description + actual target URL (passed by Orchestrator) for context. Supports positive (valid), negative (error-triggering), neutral scenarios. Limitation: no awareness of other form fields — can't generate coherent cross-field data (e.g. matching city/zip)." data-title="Data Provider" data-model="LITE — simple structured generation" data-score="Prompt: 6/10">
+      <rect class="node-box" x="340" y="520" width="180" height="70" rx="12" fill="#12121a" stroke="#a78bfa" stroke-width="1.5"/>
+      <rect x="340" y="520" width="180" height="3" rx="1.5" fill="#a78bfa"/>
+      <text x="430" y="552" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Data Provider</text>
+      <text x="430" y="570" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">generate fill_value</text>
+      <g transform="translate(397,576)">
+        <rect width="36" height="16" rx="4" fill="#a78bfa22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="18" y="12" text-anchor="middle" fill="#a78bfa" font-weight="600">LITE</text>
+      </g>
+    </g>
+
+    <!-- Navigator -->
+    <g class="node-group" data-tooltip="Generates Playwright Python code from ActionDoc (selector, bounds, role, fill_value). Executes via Session.execute_code(). First attempt: selector. Retry: adds bounds for coordinate fallback. Up to 3 retries with error-aware regeneration." data-title="Navigator" data-model="FLASH — code generation + retry" data-score="Prompt: 7/10">
+      <rect class="node-box" x="1000" y="300" width="180" height="80" rx="12" fill="#12121a" stroke="#00d4ff" stroke-width="1.5"/>
+      <rect x="1000" y="300" width="180" height="3" rx="1.5" fill="#00d4ff"/>
+      <text x="1090" y="332" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Navigator</text>
+      <text x="1090" y="350" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">ActionDoc -> Playwright</text>
+      <text x="1090" y="365" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">code -> execute</text>
+      <g transform="translate(1050,370)">
+        <rect width="46" height="16" rx="4" fill="#00d4ff22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="23" y="12" text-anchor="middle" fill="#00d4ff" font-weight="600">FLASH</text>
+      </g>
+    </g>
+
+    <!-- Sentinel -->
+    <g class="node-group" data-tooltip="Compares before/after screenshots using Gemini FLASH vision. Returns verdict: SAME_SCREEN (field filled, dropdown opened), NEW_SCREEN (full page navigation), MODAL (overlay/dialog), ERROR (error toast, validation, 404). Strong prompt — handles edge cases well." data-title="Sentinel" data-model="FLASH — visual state comparison" data-score="Prompt: 8/10">
+      <rect class="node-box" x="970" y="590" width="210" height="85" rx="12" fill="#12121a" stroke="#00d4ff" stroke-width="1.5"/>
+      <rect x="970" y="590" width="210" height="3" rx="1.5" fill="#00d4ff"/>
+      <text x="1075" y="622" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Sentinel</text>
+      <text x="1075" y="640" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">before/after -> verdict</text>
+      <text x="1075" y="658" font-family="JetBrains Mono" font-size="10" fill="#00d4ff" text-anchor="middle" opacity=".7">SAME | NEW | MODAL | ERROR</text>
+      <g transform="translate(1035,662)">
+        <rect width="46" height="16" rx="4" fill="#00d4ff22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="23" y="12" text-anchor="middle" fill="#00d4ff" font-weight="600">FLASH</text>
+      </g>
+    </g>
+
+    <!-- Screen Matcher -->
+    <g class="node-group" data-tooltip="Text-only comparison via Gemini LITE. Receives new screen_description + dict of known screen descriptions. Determines if this screen matches any known screen. No images, no hash — pure semantic text matching. Cheap and fast. Lives inside sentinel.py." data-title="Screen Matcher" data-model="LITE — text-only screen identity" data-score="Prompt: 8/10">
+      <rect class="node-box" x="920" y="720" width="190" height="70" rx="12" fill="#12121a" stroke="#a78bfa" stroke-width="1.5"/>
+      <rect x="920" y="720" width="190" height="3" rx="1.5" fill="#a78bfa"/>
+      <text x="1015" y="752" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Screen Matcher</text>
+      <text x="1015" y="770" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">known screen lookup</text>
+      <g transform="translate(980,776)">
+        <rect width="36" height="16" rx="4" fill="#a78bfa22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="18" y="12" text-anchor="middle" fill="#a78bfa" font-weight="600">LITE</text>
+      </g>
+    </g>
+
+    <!-- Firestore -->
+    <g class="node-group" data-tooltip="GCP Firestore persistence. Three collections: screens (registry + description + status + actions_summary), actions (tracker + status + outcomes), nav_edges (graph transitions between screens). Orchestrator reads ALL state from here before every decision and writes all results back. actions_summary auto-refreshes when action statuses change." data-title="Firestore" data-model="GCP Firestore — no LLM">
+      <rect class="node-box" x="620" y="690" width="230" height="65" rx="12" fill="#12121a" stroke="#f59e0b" stroke-width="1"/>
+      <rect x="620" y="690" width="230" height="3" rx="1.5" fill="#f59e0b"/>
+      <text x="735" y="718" font-family="Instrument Sans" font-size="14" fill="#f59e0b" text-anchor="middle" font-weight="700">Firestore</text>
+      <text x="735" y="738" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">Screens | Actions | Nav Edges</text>
+    </g>
+
+    <!-- Dedup Agent -->
+    <g class="node-group" data-tooltip="LLM-based pattern dedup. Runs after Page Analyzer, before Scout sees actions. Identifies repeated UI patterns (e.g., 6 identical product cards, table row actions) using Gemini LITE. Keeps K=DEDUP_REPRESENTATIVES (default 2) per group, marks the rest as skipped in Firestore. Generic — no website-specific heuristics. Preserves form inputs, assertions, and actions leading to different flows." data-title="Dedup Agent" data-model="LITE — pattern identification" data-score="Prompt: 7/10">
+      <rect class="node-box" x="60" y="440" width="160" height="70" rx="12" fill="#12121a" stroke="#a78bfa" stroke-width="1.5"/>
+      <rect x="60" y="440" width="160" height="3" rx="1.5" fill="#a78bfa"/>
+      <text x="140" y="468" font-family="Instrument Sans" font-size="14" fill="#e8e8f0" text-anchor="middle" font-weight="700">Dedup Agent</text>
+      <text x="140" y="486" font-family="JetBrains Mono" font-size="10" fill="#888899" text-anchor="middle">skip repeated patterns</text>
+      <g transform="translate(107,492)">
+        <rect width="36" height="16" rx="4" fill="#a78bfa22"/>
+        <text font-family="JetBrains Mono" font-size="9" x="18" y="12" text-anchor="middle" fill="#a78bfa" font-weight="600">LITE</text>
+      </g>
+    </g>
+
+    <!-- Orchestrator -> Dedup (actions list) -->
+    <path d="M650,450 C550,460 320,460 220,470" class="flow-line" stroke="#a78bfa" stroke-width="2" fill="none" opacity=".5" marker-end="url(#al)"/>
+    <text x="400" y="448" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".6">actions[] (after analyze)</text>
+
+    <!-- Dedup -> Orchestrator (skip_ids) -->
+    <path d="M220,490 C320,500 550,480 650,460" class="flow-line" stroke="#a78bfa" stroke-width="1.5" fill="none" opacity=".4" marker-end="url(#al)"/>
+    <text x="400" y="500" font-family="JetBrains Mono" font-size="9" fill="#a78bfa" opacity=".5">skip_ids → mark skipped</text>
+
+    <!-- Legend -->
+    <g transform="translate(40,740)">
+      <text font-family="JetBrains Mono" font-size="10" fill="#555566" font-weight="600">LEGEND</text>
+      <line x1="0" y1="18" x2="30" y2="18" stroke="#00d4ff" stroke-width="2" opacity=".6"/>
+      <text font-family="JetBrains Mono" font-size="10" x="36" y="22" fill="#888899">Gemini FLASH</text>
+      <line x1="140" y1="18" x2="170" y2="18" stroke="#a78bfa" stroke-width="2" opacity=".6"/>
+      <text font-family="JetBrains Mono" font-size="10" x="176" y="22" fill="#888899">Gemini LITE</text>
+      <line x1="270" y1="18" x2="300" y2="18" stroke="#22c55e" stroke-width="1.5" opacity=".6"/>
+      <text font-family="JetBrains Mono" font-size="10" x="306" y="22" fill="#888899">Session / Loop</text>
+      <line x1="410" y1="18" x2="440" y2="18" stroke="#f97316" stroke-width="2" opacity=".6"/>
+      <text font-family="JetBrains Mono" font-size="10" x="446" y="22" fill="#888899">Orchestrator / Scout</text>
+    </g>
+
+    <!-- Status badges -->
+    <g transform="translate(40,774)">
+      <rect width="8" height="8" rx="4" fill="#22c55e" y="2"/>
+      <text font-family="JetBrains Mono" font-size="10" x="14" y="10" fill="#22c55e">Built</text>
+      <text font-family="JetBrains Mono" font-size="10" x="50" y="10" fill="#888899">All 9 nodes + replay navigation (Session, PageAnalyzer, Dedup, Navigator, DataProvider, Sentinel, ScreenMatcher, Orchestrator, Scout)</text>
+    </g>
+    <g transform="translate(40,792)">
+      <rect width="8" height="8" rx="4" fill="none" stroke="#555566" stroke-width="1.5" y="2"/>
+      <text font-family="JetBrains Mono" font-size="10" x="14" y="10" fill="#555566">Deferred</text>
+      <text font-family="JetBrains Mono" font-size="10" x="62" y="10" fill="#555566">Action Grouping (Scout handles form sequences naturally) | Google ADK integration</text>
+    </g>
+  </svg>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const tooltip = document.getElementById('tooltip');
+document.querySelectorAll('.node-group').forEach(node => {
+  node.addEventListener('mouseenter', e => {
+    const title = node.dataset.title;
+    const text = node.dataset.tooltip;
+    const model = node.dataset.model;
+    const score = node.dataset.score;
+    let html = `<div class="tt-title">${title}</div>${text}`;
+    if (model) html += `<div class="tt-model">${model}</div>`;
+    if (score) html += `<div class="tt-score">${score}</div>`;
+    tooltip.innerHTML = html;
+    tooltip.classList.add('show');
+  });
+  node.addEventListener('mousemove', e => {
+    let x = e.clientX + 16, y = e.clientY + 16;
+    if (x + 380 > window.innerWidth) x = e.clientX - 380;
+    if (y + 200 > window.innerHeight) y = e.clientY - 200;
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+  });
+  node.addEventListener('mouseleave', () => tooltip.classList.remove('show'));
+});
+</script>
+</body>
+</html>

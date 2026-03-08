@@ -1,0 +1,19 @@
+# Core
+google-adk>=0.6.0
+google-genai>=1.0.0
+playwright>=1.40.0
+pydantic>=2.0.0
+
+# Web framework
+fastapi>=0.100.0
+uvicorn>=0.25.0
+streamlit>=1.30.0
+
+# GCP
+google-cloud-firestore>=2.16.0
+google-cloud-storage>=2.14.0
+
+# Utilities
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+imagehash>=4.3.0

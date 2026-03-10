@@ -54,5 +54,5 @@ class ActionDoc(BaseModel):
     actual_outcome: Optional[ActionOutcome] = None
     error: Optional[str] = None
     retry_count: int = 0
-    discovered_at: datetime = Field(default_factory=datetime.utcnow)
-    executed_at: Optional[datetime] = None
+    discovered_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    executed_at: Optional[str] = None

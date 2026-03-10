@@ -1,32 +1,32 @@
 """Dedup Agent — identifies repeated UI patterns and skips duplicates.
 
-Runs after Page Analyzer (which provides the FULL element list) and before
-Scout.  Uses an LLM to group actions that would lead to the same flow
-(e.g., six identical product cards), keeps K representatives per group,
-and marks the rest as skipped.
+Converted to ADK LlmAgent (Agent) so the LLM call is auto-traced.
 
-The logic is entirely generic — no website-specific heuristics.
+The orchestrator sets session state:
+    - dedup_actions: list[ActionDoc]
+
+Output stored via output_key="dedup_result_raw".
 """
 
 import json
 
+from google.adk.agents import Agent
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
 from src.config import config
-from src.utils import gemini_client, strip_code_fences
-from src.models.action import ActionDoc
+from src.utils import strip_code_fences
 
-DEDUP_PROMPT = """<role>You are a UI pattern deduplication specialist identifying repeated element patterns on a single screen.</role>
 
-<task>Analyze the list of actions below and identify groups of actions that represent the SAME repeated UI pattern. For each group, select {k} representative actions to keep and mark the rest for skipping.</task>
+DEDUP_INSTRUCTION = """<role>You are a UI pattern deduplication specialist identifying repeated element patterns on a single screen.</role>
 
-<actions>
-{actions_json}
-</actions>
+<task>Analyze the list of actions provided and identify groups of actions that represent the SAME repeated UI pattern. For each group, select representative actions to keep and mark the rest for skipping.</task>
 
 <thinking_process>
 Reason through these steps:
 1. PATTERN DETECTION — Scan for actions that share the same structure, role, and interaction type. Look for repeated UI patterns such as identical card actions, repeated row buttons, or lists of structurally similar links.
 2. DESTINATION ANALYSIS — Before grouping, consider whether actions lead to DIFFERENT destinations or flows. Actions with different purposes should NOT be grouped even if they share the same element type.
-3. REPRESENTATIVE SELECTION — For each group, pick {k} representatives that maximize variety (different text content, different positions on the page).
+3. REPRESENTATIVE SELECTION — For each group, pick representatives that maximize variety (different text content, different positions on the page).
 </thinking_process>
 
 <rules>
@@ -53,60 +53,91 @@ If there are NO repeated patterns, return: {{"groups": []}}
 </output_format>"""
 
 
-async def dedup_actions(actions: list[ActionDoc]) -> list[str]:
-    """Identify duplicate actions and return the action_ids to skip.
+def _dedup_before_model_callback(callback_context, llm_request):
+    """Inject actions as user message. Skip LLM if too few actions."""
+    state = callback_context.state
+    actions = state.get("dedup_actions", [])
+    k = config.DEDUP_REPRESENTATIVES
 
-    Args:
-        actions: Full list of ActionDocs from Page Analyzer.
+    if len(actions) <= k:
+        state["dedup_skip_ids"] = []
+        skip = json.dumps({"groups": []})
+        state["dedup_result_raw"] = skip
+        return LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text=skip)]
+            ),
+        )
 
-    Returns:
-        List of action_ids that should be marked as skipped.
-    """
-    if len(actions) <= config.DEDUP_REPRESENTATIVES:
-        return []
-
-    # Build concise JSON for the LLM — only fields relevant to dedup
     actions_for_llm = [
         {
-            "action_id": a.action_id,
-            "type": a.type.value,
-            "scenario": a.scenario.value,
-            "label": a.element_info.text or a.element_info.selector,
-            "selector": a.element_info.selector,
-            "role": a.element_info.role,
+            "action_id": a["action_id"] if isinstance(a, dict) else a.action_id,
+            "type": (a["type"] if isinstance(a, dict) else a.type.value),
+            "scenario": (a["scenario"] if isinstance(a, dict) else a.scenario.value),
+            "label": (a.get("element_info", {}).get("text") or a.get("element_info", {}).get("selector", "")) if isinstance(a, dict) else (a.element_info.text or a.element_info.selector),
+            "selector": (a.get("element_info", {}).get("selector", "")) if isinstance(a, dict) else a.element_info.selector,
+            "role": (a.get("element_info", {}).get("role", "")) if isinstance(a, dict) else a.element_info.role,
         }
         for a in actions
-        if a.type.value != "assertion"  # skip assertions — rule 4
+        if (a["type"] if isinstance(a, dict) else a.type.value) != "assertion"
     ]
 
-    if len(actions_for_llm) <= config.DEDUP_REPRESENTATIVES:
-        return []
+    if len(actions_for_llm) <= k:
+        state["dedup_skip_ids"] = []
+        skip = json.dumps({"groups": []})
+        state["dedup_result_raw"] = skip
+        return LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text=skip)]
+            ),
+        )
 
-    prompt = DEDUP_PROMPT.format(
-        actions_json=json.dumps(actions_for_llm, indent=2),
-        k=config.DEDUP_REPRESENTATIVES,
+    context_msg = (
+        f"Representatives to keep per group: {k}\n\n"
+        f"Actions:\n{json.dumps(actions_for_llm, indent=2)}"
     )
 
-    response = await gemini_client.aio.models.generate_content(
-        model=config.GEMINI_LITE_MODEL,
-        contents=[{"role": "user", "parts": [{"text": prompt}]}],
-    )
+    llm_request.contents = [
+        types.Content(
+            role="user", parts=[types.Part(text=context_msg)]
+        )
+    ]
+    return None
 
-    raw = strip_code_fences(response.text)
+
+def _dedup_after_model_callback(callback_context, llm_response):
+    """Parse the LLM response and store dedup_skip_ids."""
+    state = callback_context.state
+    actions = state.get("dedup_actions", [])
+
+    raw = ""
+    if llm_response.content and llm_response.content.parts:
+        raw = llm_response.content.parts[0].text or ""
+    raw = strip_code_fences(raw)
+
     try:
         result = json.loads(raw)
     except (json.JSONDecodeError, AttributeError):
-        return []
+        state["dedup_skip_ids"] = []
+        return None
 
     skip_ids = []
     for group in result.get("groups", []):
-        ids = group.get("skip_ids", [])
-        pattern = group.get("pattern", "repeated pattern")
-        print(f"  Dedup: skipping {len(ids)} actions — {pattern}")
-        skip_ids.extend(ids)
+        skip_ids.extend(group.get("skip_ids", []))
 
-    # Validate: only skip IDs that actually exist in our action list
-    valid_ids = {a.action_id for a in actions}
-    skip_ids = [aid for aid in skip_ids if aid in valid_ids]
+    valid_ids = {(a["action_id"] if isinstance(a, dict) else a.action_id) for a in actions}
+    state["dedup_skip_ids"] = [
+        aid for aid in skip_ids if aid in valid_ids
+    ]
+    return None
 
-    return skip_ids
+
+dedup_agent = Agent(
+    name="dedup",
+    description="Identifies repeated UI patterns and marks duplicates.",
+    model=config.GEMINI_LITE_MODEL,
+    instruction=DEDUP_INSTRUCTION,
+    output_key="dedup_result_raw",
+    before_model_callback=_dedup_before_model_callback,
+    after_model_callback=_dedup_after_model_callback,
+)

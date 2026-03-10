@@ -21,5 +21,5 @@ class ScreenDoc(BaseModel):
         "total": 0, "pending": 0, "completed": 0, "failed": 0, "skipped": 0,
     })
     screenshot_url: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_visited: datetime = Field(default_factory=datetime.utcnow)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_visited: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

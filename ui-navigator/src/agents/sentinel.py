@@ -1,8 +1,19 @@
+"""Sentinel Agent — state change detection + screen matching.
+
+Split into two agents:
+- sentinel_compare: Agent (multimodal via before_model_callback)
+- sentinel_match: Agent — text-only screen matching
+"""
+
 import base64
 import json
 
+from google.adk.agents import Agent
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
 from src.config import config
-from src.utils import gemini_client, strip_code_fences
+from src.utils import strip_code_fences
 
 
 class StateVerdict:
@@ -11,6 +22,10 @@ class StateVerdict:
     MODAL = "modal"
     ERROR = "error"
 
+
+# -------------------------------------------------------------------
+# Sentinel Compare — Agent (multimodal via before_model_callback)
+# -------------------------------------------------------------------
 
 COMPARE_PROMPT = """<role>You are a UI state change detector comparing two screenshots taken before and after an action was executed.</role>
 
@@ -38,9 +53,94 @@ Return ONLY valid JSON: {"verdict": "<one of the four values>", "reason": "<brie
 </output_format>"""
 
 
-MATCH_PROMPT = """<role>You are a screen identity matcher determining whether a newly discovered screen corresponds to any previously seen screen.</role>
+def _compare_before_model_callback(callback_context, llm_request):
+    """Inject before/after screenshots as inline images."""
+    state = callback_context.state
+    raw_before = state.get("sentinel_screenshot_before", "")
+    raw_after = state.get("sentinel_screenshot_after", "")
+    # Ensure raw bytes for Blob — state stores base64 strings
+    if isinstance(raw_before, bytes):
+        before_bytes = raw_before
+    else:
+        before_bytes = base64.b64decode(raw_before) if raw_before else b""
+    if isinstance(raw_after, bytes):
+        after_bytes = raw_after
+    else:
+        after_bytes = base64.b64decode(raw_after) if raw_after else b""
 
-<task>Compare the NEW screen description against the list of KNOWN screens and determine if it represents the same page or view as any of them.</task>
+    llm_request.contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(text=COMPARE_PROMPT),
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png",
+                        data=before_bytes,
+                    )
+                ),
+                types.Part(
+                    text="Screenshot 1 (BEFORE) is above. "
+                    "Screenshot 2 (AFTER) is below."
+                ),
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png",
+                        data=after_bytes,
+                    )
+                ),
+            ],
+        )
+    ]
+    return None
+
+
+def _compare_after_model_callback(callback_context, llm_response):
+    """Parse verdict and store in state."""
+    state = callback_context.state
+    raw = ""
+    if llm_response.content and llm_response.content.parts:
+        raw = llm_response.content.parts[0].text or ""
+    raw = strip_code_fences(raw)
+
+    try:
+        result = json.loads(raw)
+        verdict = result.get("verdict", "same_screen")
+        if verdict not in (
+            StateVerdict.SAME_SCREEN,
+            StateVerdict.NEW_SCREEN,
+            StateVerdict.MODAL,
+            StateVerdict.ERROR,
+        ):
+            verdict = StateVerdict.SAME_SCREEN
+        state["sentinel_verdict"] = {
+            "verdict": verdict,
+            "reason": result.get("reason", ""),
+        }
+    except (json.JSONDecodeError, AttributeError):
+        state["sentinel_verdict"] = {
+            "verdict": StateVerdict.SAME_SCREEN,
+            "reason": "Failed to parse response",
+        }
+    return None
+
+
+sentinel_compare_agent = Agent(
+    name="sentinel_compare",
+    description="Detects state changes via screenshot comparison.",
+    model=config.GEMINI_FLASH_MODEL,
+    instruction=COMPARE_PROMPT,
+    output_key="sentinel_compare_raw",
+    before_model_callback=_compare_before_model_callback,
+    after_model_callback=_compare_after_model_callback,
+)
+
+
+# -------------------------------------------------------------------
+# Sentinel Match — LlmAgent (text-only, fully traced)
+# -------------------------------------------------------------------
+
+MATCH_INSTRUCTION = """<role>You are a screen identity matcher determining whether a newly discovered screen corresponds to any previously seen screen.</role>
 
 <description_format>
 Screen descriptions follow a structured format: "Page Title | Screen Type | Key Structural Elements | Purpose"
@@ -61,105 +161,73 @@ A screen that displays a COLLECTION of items and a screen that displays a SINGLE
 When in doubt, return no match. A false negative (treating a known screen as new) simply causes re-analysis. A false positive (matching two different screens) corrupts the navigation graph and is much more harmful.
 </critical_rule>
 
-<input>
-NEW SCREEN DESCRIPTION:
-{new_description}
-
-KNOWN SCREENS:
-{known_screens}
-</input>
-
 <output_format>
 If the new screen matches a known screen, return: {{"match": true, "screen_id": "<the matching screen_id>"}}
 If no match, return: {{"match": false, "screen_id": null}}
 </output_format>"""
 
 
+def _match_before_model_callback(callback_context, llm_request):
+    """Inject screen descriptions as user message."""
+    state = callback_context.state
+    new_desc = state.get("sentinel_new_desc", "")
+    known_screens = state.get("sentinel_known_screens", {})
 
-async def compare_states(
-    screenshot_before: bytes,
-    screenshot_after: bytes,
-) -> dict:
-    """Compare before/after screenshots to determine what state change occurred.
-
-    Uses Gemini FLASH with vision — this is a complex visual reasoning task.
-
-    Returns:
-        {"verdict": "same_screen|new_screen|modal|error", "reason": "..."}
-    """
-    before_b64 = base64.b64encode(screenshot_before).decode()
-    after_b64 = base64.b64encode(screenshot_after).decode()
-
-    response = gemini_client.models.generate_content(
-        model=config.GEMINI_FLASH_MODEL,
-        contents=[{
-            "role": "user",
-            "parts": [
-                {"text": COMPARE_PROMPT},
-                {"inline_data": {"mime_type": "image/png", "data": before_b64}},
-                {"text": "Screenshot 1 (BEFORE) is above. Screenshot 2 (AFTER) is below."},
-                {"inline_data": {"mime_type": "image/png", "data": after_b64}},
-            ],
-        }],
-    )
-
-    raw = strip_code_fences(response.text)
-    try:
-        result = json.loads(raw)
-        verdict = result.get("verdict", "same_screen")
-        if verdict not in (
-            StateVerdict.SAME_SCREEN,
-            StateVerdict.NEW_SCREEN,
-            StateVerdict.MODAL,
-            StateVerdict.ERROR,
-        ):
-            verdict = StateVerdict.SAME_SCREEN
-        return {"verdict": verdict, "reason": result.get("reason", "")}
-    except (json.JSONDecodeError, AttributeError):
-        return {"verdict": StateVerdict.SAME_SCREEN, "reason": "Failed to parse response"}
-
-
-async def match_screen(
-    new_description: str,
-    known_screens: dict[str, str],
-) -> dict:
-    """Check if a new screen description matches any known screen.
-
-    Uses Gemini LITE — this is a simple text comparison task.
-
-    Args:
-        new_description: screen_description from Page Analyzer for the new screen.
-        known_screens: dict of {screen_id: screen_description} for all known screens.
-
-    Returns:
-        {"match": True, "screen_id": "scr_001"} or {"match": False, "screen_id": None}
-    """
     if not known_screens:
-        return {"match": False, "screen_id": None}
+        no_match = json.dumps({"match": False, "screen_id": None})
+        state["sentinel_match"] = {"match": False, "screen_id": None}
+        state["sentinel_match_raw"] = no_match
+        return LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text=no_match)]
+            ),
+        )
 
     screens_text = "\n".join(
-        f"- {sid}: \"{desc}\"" for sid, desc in known_screens.items()
+        f'- {sid}: "{desc}"'
+        for sid, desc in known_screens.items()
     )
 
-    prompt = MATCH_PROMPT.format(
-        new_description=new_description,
-        known_screens=screens_text,
+    context_msg = (
+        f"NEW SCREEN DESCRIPTION:\n{new_desc}\n\n"
+        f"KNOWN SCREENS:\n{screens_text}"
     )
 
-    response = gemini_client.models.generate_content(
-        model=config.GEMINI_LITE_MODEL,
-        contents=[{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-    )
+    llm_request.contents = [
+        types.Content(
+            role="user", parts=[types.Part(text=context_msg)]
+        )
+    ]
+    return None
 
-    raw = strip_code_fences(response.text)
+
+def _match_after_model_callback(callback_context, llm_response):
+    """Parse and store match result."""
+    state = callback_context.state
+    raw = ""
+    if llm_response.content and llm_response.content.parts:
+        raw = llm_response.content.parts[0].text or ""
+    raw = strip_code_fences(raw)
+
     try:
         result = json.loads(raw)
-        return {
+        state["sentinel_match"] = {
             "match": bool(result.get("match", False)),
             "screen_id": result.get("screen_id"),
         }
     except (json.JSONDecodeError, AttributeError):
-        return {"match": False, "screen_id": None}
+        state["sentinel_match"] = {
+            "match": False, "screen_id": None,
+        }
+    return None
+
+
+sentinel_match_agent = Agent(
+    name="sentinel_match",
+    description="Matches new screens against known screens.",
+    model=config.GEMINI_LITE_MODEL,
+    instruction=MATCH_INSTRUCTION,
+    output_key="sentinel_match_raw",
+    before_model_callback=_match_before_model_callback,
+    after_model_callback=_match_after_model_callback,
+)

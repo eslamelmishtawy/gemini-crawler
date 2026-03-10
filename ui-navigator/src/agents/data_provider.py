@@ -1,21 +1,29 @@
+"""Data Provider Agent — generates test data for form fills.
+
+Converted to ADK LlmAgent (Agent) so the LLM call is auto-traced.
+
+The orchestrator sets session state before invoking:
+    - dp_action: ActionDoc
+    - dp_description: str
+    - dp_target_url: str
+
+Output stored via output_key="dp_result_raw".
+"""
+
 import json
 
+from google.adk.agents import Agent
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
 from src.config import config
-from src.utils import gemini_client, strip_code_fences
-from src.models.action import ActionDoc, ActionType
+from src.models.action import ActionType
+from src.utils import strip_code_fences
 
-DATA_PROMPT = """<role>You are a test data generator producing contextually appropriate values for automated UI testing.</role>
 
-<context>
-Page: {screen_description}
-URL: {target_url}
-Field label: {label}
-Field role: {role}
-Field selector: {selector}
-Test scenario: {scenario}
-</context>
+DATA_INSTRUCTION = """<role>You are a test data generator producing contextually appropriate values for automated UI testing.</role>
 
-<task>Generate a single fill value for this field that is contextually appropriate given the page purpose and field type.</task>
+<task>Generate a single fill value for the field described in the user message that is contextually appropriate given the page purpose and field type.</task>
 
 <thinking_process>
 Reason through these steps:
@@ -35,46 +43,88 @@ Return ONLY: {{"fill_value": "<the generated value>"}}
 </output_format>"""
 
 
+def _dp_before_model_callback(callback_context, llm_request):
+    """Inject field context as the user message."""
+    state = callback_context.state
+    action = state.get("dp_action")
+    screen_description = state.get("dp_description", "")
+    target_url = state.get("dp_target_url", "")
 
-async def provide_fill_value(
-    action: ActionDoc,
-    screen_description: str,
-    target_url: str,
-) -> ActionDoc:
-    """Generate contextually relevant test data for a FILL action.
+    if isinstance(action, dict):
+        from src.models.action import ActionDoc
+        action = ActionDoc(**action)
+        state["dp_action"] = action
 
-    Called by the orchestrator before passing a FILL action to the Navigator.
-    Uses screen_description from Page Analyzer to understand page context.
-    """
-    if action.type != ActionType.FILL:
-        return action
+    if not action or action.type != ActionType.FILL:
+        skip = json.dumps({"fill_value": ""})
+        state["dp_result_raw"] = skip
+        return LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text=skip)]
+            ),
+        )
 
     if action.fill_value:
-        return action
+        skip = json.dumps({"fill_value": action.fill_value})
+        state["dp_result_raw"] = skip
+        state["dp_result"] = action.model_dump(mode="json")
+        return LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text=skip)]
+            ),
+        )
 
     elem = action.element_info
-    prompt = DATA_PROMPT.format(
-        label=elem.text or "unknown field",
-        role=elem.role or "input",
-        selector=elem.selector or "unknown",
-        scenario=action.scenario.value,
-        screen_description=screen_description or "unknown page",
-        target_url=target_url,
+    context_msg = (
+        f"Page: {screen_description}\n"
+        f"URL: {target_url}\n"
+        f"Field label: {elem.text or 'unknown field'}\n"
+        f"Field role: {elem.role or 'input'}\n"
+        f"Field selector: {elem.selector or 'unknown'}\n"
+        f"Test scenario: {action.scenario.value}"
     )
 
-    response = gemini_client.models.generate_content(
-        model=config.GEMINI_LITE_MODEL,
-        contents=[{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-    )
+    llm_request.contents = [
+        types.Content(
+            role="user", parts=[types.Part(text=context_msg)]
+        )
+    ]
+    return None
 
-    raw = strip_code_fences(response.text)
+
+def _dp_after_model_callback(callback_context, llm_response):
+    """Parse the LLM response and store the updated ActionDoc."""
+    state = callback_context.state
+    action = state.get("dp_action")
+
+    raw = ""
+    if llm_response.content and llm_response.content.parts:
+        raw = llm_response.content.parts[0].text or ""
+    raw = strip_code_fences(raw)
+
     try:
         data = json.loads(raw)
         fill_value = str(data.get("fill_value", ""))
     except (json.JSONDecodeError, AttributeError):
         fill_value = raw.strip('"').strip("'")
 
-    return action.model_copy(update={"fill_value": fill_value})
+    if isinstance(action, dict):
+        from src.models.action import ActionDoc
+        action = ActionDoc(**action)
+
+    if action:
+        state["dp_result"] = action.model_copy(
+            update={"fill_value": fill_value}
+        ).model_dump(mode="json")
+    return None
+
+
+data_provider_agent = Agent(
+    name="data_provider",
+    description="Generates contextually appropriate test data for form fills.",
+    model=config.GEMINI_LITE_MODEL,
+    instruction=DATA_INSTRUCTION,
+    output_key="dp_result_raw",
+    before_model_callback=_dp_before_model_callback,
+    after_model_callback=_dp_after_model_callback,
+)

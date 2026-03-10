@@ -9,4 +9,4 @@ class NavEdge(BaseModel):
     via_action: str
     action_type: str = ""
     action_text: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

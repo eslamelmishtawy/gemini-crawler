@@ -104,8 +104,14 @@ def update_action_fill_value(action_id: str, fill_value: str) -> None:
     db.collection("actions").document(action_id).update({"fill_value": fill_value})
 
 
-def update_action_status(action_id: str, status: str, outcome: dict | None = None) -> None:
-    """Update an action's status and optionally its outcome.
+def update_action_status(
+    action_id: str,
+    status: str,
+    outcome: dict | None = None,
+    error: str | None = None,
+    executed_at: str | None = None,
+) -> None:
+    """Update an action's status and optionally its outcome, error, and executed_at.
 
     Also refreshes the parent screen's actions_summary so the
     Orchestrator always sees up-to-date counts.
@@ -113,6 +119,10 @@ def update_action_status(action_id: str, status: str, outcome: dict | None = Non
     updates = {"status": status}
     if outcome:
         updates["actual_outcome"] = outcome
+    if error is not None:
+        updates["error"] = error
+    if executed_at is not None:
+        updates["executed_at"] = executed_at
     db.collection("actions").document(action_id).update(updates)
 
     # Refresh parent screen's actions_summary
@@ -151,3 +161,17 @@ def get_nav_edges() -> list[dict]:
     """Get all navigation edges (for graph visualization)."""
     docs = db.collection("nav_edges").stream()
     return [doc.to_dict() for doc in docs]
+
+
+# --- Cleanup ---
+
+def clear_all() -> None:
+    """Delete all docs in screens, actions, nav_edges collections.
+
+    Called at the start of each exploration to ensure a clean state.
+    """
+    for collection_name in ("screens", "actions", "nav_edges"):
+        docs = db.collection(collection_name).stream()
+        for doc in docs:
+            doc.reference.delete()
+    print("Firestore cleared (screens, actions, nav_edges)")

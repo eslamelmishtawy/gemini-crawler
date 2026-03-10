@@ -1,27 +1,60 @@
-import asyncio
+"""Page Analyzer — dual vision + DOM analysis with ParallelAgent.
+
+Architecture:
+    page_analyzer (SequentialAgent)
+    ├── parallel_extraction (ParallelAgent)
+    │   ├── vision_analyzer (Agent — multimodal via before_model_callback)
+    │   └── dom_analyzer (Agent/LlmAgent)
+    └── merger (Agent/LlmAgent)
+
+State keys set by orchestrator before invoking:
+    - pa_screenshot: bytes
+    - pa_page_source: str
+
+State keys set after completion:
+    - pa_screen: ScreenDoc
+    - pa_description: str
+    - pa_actions: list[ActionDoc]
+"""
+
 import base64
 import json
 import uuid
 
+from google.adk.agents import (
+    Agent, ParallelAgent, SequentialAgent,
+)
+from google.genai import types
+
 from src.config import config
-from src.utils import gemini_client, strip_code_fences
+from src.utils import strip_code_fences
 from src.models.screen import ScreenDoc, ScreenStatus
 from src.models.action import (
     ActionDoc, ActionType, ActionStatus, ActionScenario, ElementInfo,
 )
 
-# Derived from enums — keeps prompts in sync with models
 VALID_ACTION_TYPES = [t.value for t in ActionType]
 VALID_SCENARIOS = [s.value for s in ActionScenario]
 
-VISION_PROMPT = f"""<role>You are a UI element extraction specialist analyzing a screenshot of a web or mobile screen.</role>
 
-<task>Extract EVERY visible element from this screenshot. Achieve exhaustive coverage — enumerate all elements without skipping any, even if they appear similar to each other.</task>
+# -------------------------------------------------------------------
+# Vision Analyzer — Agent (multimodal via before_model_callback)
+# -------------------------------------------------------------------
+
+VISION_PROMPT = f"""<role>You are a UI element extraction specialist \
+analyzing a screenshot of a web or mobile screen.</role>
+
+<task>Extract EVERY visible element from this screenshot. \
+Achieve exhaustive coverage — enumerate all elements without \
+skipping any, even if they appear similar to each other.</task>
 
 <categories>
 Classify each element into one of two categories:
-1. INTERACTIVE — buttons, inputs, links, toggles, dropdowns, tabs, navigation items, or any element a user can act on.
-2. ASSERTION — page titles, headings, labels, status text, error messages, prices, counts, or any element that displays information.
+1. INTERACTIVE — buttons, inputs, links, toggles, dropdowns, \
+tabs, navigation items, or any element a user can act on.
+2. ASSERTION — page titles, headings, labels, status text, \
+error messages, prices, counts, or any element that displays \
+information.
 </categories>
 
 <element_fields>
@@ -30,44 +63,47 @@ For each element, return:
 - label: a human-readable description of the element's purpose
 - text: the actual text content displayed on screen
 - bounds: {{x, y, width, height}} in pixels relative to the screenshot
-- visible: true if clearly visible and interactable, false if obscured or disabled
+- visible: true if clearly visible and interactable, false if \
+obscured or disabled
 - scenario: one of {VALID_SCENARIOS}
 </element_fields>
 
 <scenario_logic>
-Determine the scenario by reasoning about how this element would be used in testing:
-- "positive" — interaction that follows the intended happy path (valid data, expected usage)
-- "negative" — interaction designed to test error handling (empty submission, invalid format, boundary values)
-- "neutral" — no pass/fail implication (reading text, checking layout, visual verification)
+Determine the scenario by reasoning about how this element would \
+be used in testing:
+- "positive" — interaction that follows the intended happy path
+- "negative" — interaction designed to test error handling
+- "neutral" — no pass/fail implication
 
 Apply these rules:
-- Assertion elements are always "neutral" — they are read-only observations.
-- Input fields should generate BOTH a "positive" and a "negative" entry as separate elements, since the same field can be tested both ways.
-- Buttons and links are typically "positive" unless their purpose is explicitly error-related.
+- Assertion elements are always "neutral".
+- Input fields should generate BOTH a "positive" and a "negative" \
+entry as separate elements.
+- Buttons and links are typically "positive" unless their purpose \
+is explicitly error-related.
 </scenario_logic>
 
 <additional_fields>
 Also return:
-- screen_description: a structured description using this exact format:
-  "[Page Title] | [Screen Type] | [Key Structural Elements] | [User Purpose]"
-  Example: "Products | Product listing grid | 6 item cards, sort dropdown, cart icon, hamburger menu | Browse and add products to cart"
-  Example: "Sauce Labs Backpack | Single product detail | product image, price, description, back button, add-to-cart | View product details and add to cart"
-  Example: "Login | Authentication form | username input, password input, login button, credentials list | Sign in to access the store"
-  The page title and structural elements make each screen uniquely identifiable even when purposes overlap.
+- screen_description: a structured description using this exact \
+format: "[Page Title] | [Screen Type] | [Key Structural Elements] \
+| [User Purpose]"
 - resolution: {{width, height}} of the screenshot in pixels
 </additional_fields>
 
 <output_format>
 Return ONLY valid JSON matching this structure:
 {{
-  "screen_description": "<Page Title | Screen Type | Key Elements | Purpose>",
+  "screen_description": "<Page Title | Screen Type | Key Elements \
+| Purpose>",
   "resolution": {{"width": <int>, "height": <int>}},
   "elements": [
     {{
       "type": "<element type>",
       "label": "<human-readable description>",
       "text": "<displayed text>",
-      "bounds": {{"x": <int>, "y": <int>, "width": <int>, "height": <int>}},
+      "bounds": {{"x": <int>, "y": <int>, "width": <int>, \
+"height": <int>}},
       "visible": <bool>,
       "scenario": "<scenario value>"
     }}
@@ -75,7 +111,49 @@ Return ONLY valid JSON matching this structure:
 }}
 </output_format>"""
 
-DOM_PROMPT = f"""<role>You are a DOM analysis specialist extracting interactive and assertable elements from HTML source code.</role>
+
+def _vision_before_model_callback(callback_context, llm_request):
+    """Inject screenshot as inline image into the LLM request."""
+    state = callback_context.state
+    raw = state["pa_screenshot"]
+    # State stores base64 string; if somehow still bytes, encode it
+    if isinstance(raw, bytes):
+        screenshot_b64 = base64.b64encode(raw).decode("utf-8")
+    else:
+        screenshot_b64 = raw
+
+    llm_request.contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png",
+                        data=screenshot_b64,
+                    )
+                ),
+                types.Part(text=VISION_PROMPT),
+            ],
+        )
+    ]
+    return None
+
+
+vision_analyzer_agent = Agent(
+    name="vision_analyzer",
+    description="Extracts UI elements from screenshot via vision.",
+    model=config.GEMINI_FLASH_MODEL,
+    instruction=VISION_PROMPT,
+    output_key="pa_vision_raw",
+    before_model_callback=_vision_before_model_callback,
+)
+
+
+# -------------------------------------------------------------------
+# DOM Analyzer — LlmAgent (text-only, fully traced)
+# -------------------------------------------------------------------
+
+DOM_INSTRUCTION = f"""<role>You are a DOM analysis specialist extracting interactive and assertable elements from HTML source code.</role>
 
 <task>Parse the HTML source and extract EVERY element that is either interactive or carries meaningful text content. Achieve exhaustive coverage of the DOM.</task>
 
@@ -117,7 +195,39 @@ Return ONLY valid JSON matching this structure:
 }}
 </output_format>"""
 
-MERGE_PROMPT = """<role>You are a UI analysis merger combining visual and DOM-based element extraction results.</role>
+
+def _dom_before_model_callback(callback_context, llm_request):
+    """Inject page source as user message."""
+    state = callback_context.state
+    page_source = state.get("pa_page_source", "")
+
+    context_msg = (
+        f"HTML SOURCE:\n```html\n{page_source[:15000]}\n```"
+    )
+
+    llm_request.contents = [
+        types.Content(
+            role="user", parts=[types.Part(text=context_msg)]
+        )
+    ]
+    return None
+
+
+dom_analyzer_agent = Agent(
+    name="dom_analyzer",
+    description="Extracts elements from HTML DOM.",
+    model=config.GEMINI_FLASH_MODEL,
+    instruction=DOM_INSTRUCTION,
+    output_key="pa_dom_raw",
+    before_model_callback=_dom_before_model_callback,
+)
+
+
+# -------------------------------------------------------------------
+# Merger — LlmAgent (text-only, fully traced)
+# -------------------------------------------------------------------
+
+MERGE_INSTRUCTION = """<role>You are a UI analysis merger combining visual and DOM-based element extraction results.</role>
 
 <task>Merge two independent analyses of the same screen into a single unified element list:
 1. VISION analysis (from screenshot): contains bounds, visibility, and visual context.
@@ -166,6 +276,27 @@ Return ONLY valid JSON:
 </output_format>"""
 
 
+def _merger_before_model_callback(callback_context, llm_request):
+    """Inject vision + DOM results as user message."""
+    state = callback_context.state
+    vision_raw = state.get("pa_vision_raw", "{}")
+    dom_raw = state.get("pa_dom_raw", "{}")
+
+    vision_text = strip_code_fences(vision_raw)
+    dom_text = strip_code_fences(dom_raw)
+
+    context_msg = (
+        f"VISION ANALYSIS:\n{vision_text}\n\n"
+        f"DOM ANALYSIS:\n{dom_text}"
+    )
+
+    llm_request.contents = [
+        types.Content(
+            role="user", parts=[types.Part(text=context_msg)]
+        )
+    ]
+    return None
+
 
 def _parse_action_type(type_str: str) -> ActionType:
     try:
@@ -181,55 +312,26 @@ def _parse_scenario(scenario_str: str) -> ActionScenario:
         return ActionScenario.NEUTRAL
 
 
-async def analyze_screen(screenshot_bytes: bytes, page_source: str) -> dict:
-    """Dual analysis: Vision (coordinates) + DOM (selectors) → merged elements."""
-    screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+def _merger_after_model_callback(callback_context, llm_response):
+    """Parse merged result and build ScreenDoc + ActionDocs."""
+    state = callback_context.state
 
-    # Vision + DOM run in parallel — independent analyses
-    vision_response, dom_response = await asyncio.gather(
-        gemini_client.aio.models.generate_content(
-            model=config.GEMINI_FLASH_MODEL,
-            contents=[{
-                "role": "user",
-                "parts": [
-                    {"inline_data": {"mime_type": "image/png", "data": screenshot_b64}},
-                    {"text": VISION_PROMPT},
-                ],
-            }],
-        ),
-        gemini_client.aio.models.generate_content(
-            model=config.GEMINI_FLASH_MODEL,
-            contents=[{
-                "role": "user",
-                "parts": [
-                    {"text": f"HTML SOURCE:\n```html\n{page_source[:15000]}\n```\n\n{DOM_PROMPT}"},
-                ],
-            }],
-        ),
-    )
+    raw = ""
+    if llm_response.content and llm_response.content.parts:
+        raw = llm_response.content.parts[0].text or ""
+    raw = strip_code_fences(raw)
 
-    vision_text = strip_code_fences(vision_response.text)
-    dom_text = strip_code_fences(dom_response.text)
+    try:
+        merged = json.loads(raw)
+    except (json.JSONDecodeError, AttributeError):
+        merged = {"screen_description": "", "elements": []}
 
-    merge_response = await gemini_client.aio.models.generate_content(
-        model=config.GEMINI_LITE_MODEL,
-        contents=[{
-            "role": "user",
-            "parts": [{
-                "text": (
-                    f"VISION ANALYSIS:\n{vision_text}\n\n"
-                    f"DOM ANALYSIS:\n{dom_text}\n\n"
-                    f"{MERGE_PROMPT}"
-                ),
-            }],
-        }],
-    )
+    vision_raw = state.get("pa_vision_raw", "{}")
+    try:
+        vision_data = json.loads(strip_code_fences(vision_raw))
+    except (json.JSONDecodeError, AttributeError):
+        vision_data = {}
 
-    merged = json.loads(strip_code_fences(merge_response.text))
-    vision_data = json.loads(vision_text)
-
-    # screen_description from merged understanding (vision + DOM combined)
-    # Falls back to vision-only description if merge didn't produce one
     screen_description = (
         merged.get("screen_description")
         or vision_data.get("screen_description", "")
@@ -242,7 +344,9 @@ async def analyze_screen(screenshot_bytes: bytes, page_source: str) -> dict:
             action_id=f"act_{uuid.uuid4().hex[:8]}",
             screen_id=screen_id,
             type=_parse_action_type(elem.get("type", "click")),
-            scenario=_parse_scenario(elem.get("scenario", "neutral")),
+            scenario=_parse_scenario(
+                elem.get("scenario", "neutral")
+            ),
             element_info=ElementInfo(
                 selector=elem.get("selector", ""),
                 text=elem.get("text", ""),
@@ -259,7 +363,9 @@ async def analyze_screen(screenshot_bytes: bytes, page_source: str) -> dict:
         screen_id=screen_id,
         screen_description=screen_description,
         status=ScreenStatus.ANALYZED,
-        resolution=vision_data.get("resolution", {"width": 1280, "height": 720}),
+        resolution=vision_data.get(
+            "resolution", {"width": 1280, "height": 720}
+        ),
         actions_summary={
             "total": len(actions),
             "pending": len(actions),
@@ -267,8 +373,39 @@ async def analyze_screen(screenshot_bytes: bytes, page_source: str) -> dict:
         },
     )
 
-    return {
-        "screen": screen,
-        "screen_description": screen_description,
-        "actions": actions,
-    }
+    state["pa_screen"] = screen.model_dump(mode="json")
+    state["pa_description"] = screen_description
+    state["pa_actions"] = [a.model_dump(mode="json") for a in actions]
+    return None
+
+
+merger_agent = Agent(
+    name="merger",
+    description="Merges vision and DOM analysis into unified list.",
+    model=config.GEMINI_LITE_MODEL,
+    instruction=MERGE_INSTRUCTION,
+    output_key="pa_merge_raw",
+    before_model_callback=_merger_before_model_callback,
+    after_model_callback=_merger_after_model_callback,
+)
+
+
+# -------------------------------------------------------------------
+# Page Analyzer Pipeline
+# -------------------------------------------------------------------
+
+page_analyzer_agent = SequentialAgent(
+    name="page_analyzer",
+    description="Dual vision + DOM analysis to extract UI elements.",
+    sub_agents=[
+        ParallelAgent(
+            name="parallel_extraction",
+            description="Runs vision and DOM extraction concurrently.",
+            sub_agents=[
+                vision_analyzer_agent,
+                dom_analyzer_agent,
+            ],
+        ),
+        merger_agent,
+    ],
+)

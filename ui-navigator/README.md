@@ -83,6 +83,15 @@ docker run -p 8080:8080 --env-file .env ui-navigator
 ```
 
 ### Deploy to Cloud Run
+
+**One-command deploy** (enables APIs, builds, deploys, verifies health):
+```bash
+./deploy.sh --project your-gcp-project
+```
+
+**CI/CD** — `cloudbuild.yaml` is included for automated deployment via Cloud Build triggers (auto-deploys on push to main).
+
+**Manual deploy:**
 ```bash
 gcloud run deploy ui-navigator \
   --source . \
@@ -136,7 +145,8 @@ ui-navigator/
 │   └── config.py        # Environment-driven configuration
 ├── docs/
 ├── Dockerfile
-├── cloudbuild.yaml      # Cloud Build CI/CD
+├── cloudbuild.yaml      # Cloud Build CI/CD pipeline
+├── deploy.sh            # One-command deployment script
 └── requirements.txt
 ```
 

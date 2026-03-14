@@ -15,7 +15,7 @@ The result: a complete navigation map of the application with every screen, ever
 
 ## Architecture
 
-![Architecture Diagram](../architecture.png)
+![Architecture Diagram](architecture.png)
 
 **27 nodes** — hub-and-spoke architecture where all agent communication flows through the Orchestrator.
 
@@ -58,6 +58,8 @@ The result: a complete navigation map of the application with every screen, ever
 
 ### Setup
 ```bash
+cd ui-navigator
+
 # Install dependencies
 pip install -r requirements.txt
 playwright install chromium

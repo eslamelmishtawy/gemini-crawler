@@ -30,11 +30,13 @@ class NavigateToAgent(BaseAgent):
         session = state["session"]
         known_screens = state["known_screens"]
 
+        run_id = state["run_id"]
+
         if not target_id or target_id not in known_screens:
             yield self._msg(ctx, f"Invalid target: {target_id}")
             return
 
-        nav_edges = get_nav_edges()
+        nav_edges = get_nav_edges(run_id)
         path = find_path(nav_edges, first_screen_id, target_id)
         if path is None:
             yield self._msg(
@@ -47,7 +49,7 @@ class NavigateToAgent(BaseAgent):
         await session.goto(target_url)
 
         for edge in path:
-            action_dict = get_action(edge["via_action"])
+            action_dict = get_action(run_id, edge["via_action"])
             if not action_dict:
                 yield self._msg(
                     ctx,

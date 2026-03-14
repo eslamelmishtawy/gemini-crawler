@@ -31,11 +31,10 @@ Reason through these steps:
 
 <rules>
 1. Only group actions that share the SAME structure, role, and interaction pattern AND would produce the same type of flow when executed.
-2. Do NOT group actions that lead to clearly different destinations or serve different purposes.
-3. Do NOT group form input fields — each input field serves a unique purpose.
-4. Do NOT group assertion elements — they are read-only checks with negligible cost.
-5. Only group actions of the SAME type (click with click, fill with fill).
-6. Actions that do not belong to any repeated pattern should NOT appear in any group.
+2. Do NOT group actions that lead to clearly different destinations or serve different purposes. Navigation links with different labels go to DIFFERENT screens — these are NOT duplicates even if they share the same role/selector pattern.
+3. DO group repeated UI patterns like product cards, table rows, or list items where each instance triggers the same type of flow (e.g. multiple "Add to cart" buttons on a product listing).
+4. Do NOT group form input fields — each input field serves a unique purpose.
+5. Do NOT group assertion elements — they are read-only checks with negligible cost.
 </rules>
 
 <output_format>
@@ -135,7 +134,7 @@ def _dedup_after_model_callback(callback_context, llm_response):
 dedup_agent = Agent(
     name="dedup",
     description="Identifies repeated UI patterns and marks duplicates.",
-    model=config.GEMINI_LITE_MODEL,
+    model=config.GEMINI_FLASH_MODEL,
     instruction=DEDUP_INSTRUCTION,
     output_key="dedup_result_raw",
     before_model_callback=_dedup_before_model_callback,

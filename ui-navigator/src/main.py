@@ -9,6 +9,7 @@ Usage:
 import asyncio
 import sys
 
+from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
@@ -49,6 +50,9 @@ async def run_exploration(
     print(f"Platform: {platform}, Headless: {headless}")
     print("=" * 60)
 
+    # With 50 iterations × ~10 LLM calls each, the default 500 limit is too low.
+    run_config = RunConfig(max_llm_calls=5000)
+
     async for event in runner.run_async(
         user_id="explorer",
         session_id="session_1",
@@ -56,6 +60,7 @@ async def run_exploration(
             role="user",
             parts=[types.Part(text=f"Explore {url}")],
         ),
+        run_config=run_config,
     ):
         if event.content and event.content.parts:
             text = event.content.parts[0].text

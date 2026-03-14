@@ -109,12 +109,14 @@ def _iteration_before_model_callback(callback_context, llm_request):
     known_screens = state.get("known_screens", {})
     history = state.get("history", [])
 
+    run_id = state["run_id"]
+
     iteration_num = state.get("iteration_number", 0) + 1
     state["iteration_number"] = iteration_num
 
-    all_screens = get_all_screens()
-    nav_edges = get_nav_edges()
-    screen_actions = get_actions_by_screen(current_screen_id)
+    all_screens = get_all_screens(run_id)
+    nav_edges = get_nav_edges(run_id)
+    screen_actions = get_actions_by_screen(run_id, current_screen_id)
 
     # Determine current screen status
     current_status = "analyzed"
@@ -134,7 +136,7 @@ def _iteration_before_model_callback(callback_context, llm_request):
 
     # Mark screen fully explored if no pending actions
     if not pending:
-        update_screen(current_screen_id, {"status": "fully_explored"})
+        update_screen(run_id, current_screen_id, {"status": "fully_explored"})
 
     # Build situation string
     if not pending:

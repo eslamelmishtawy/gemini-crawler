@@ -1,7 +1,19 @@
 import base64
+import re
+from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from google import genai
 from src.config import config
+
+
+def generate_run_id(url: str) -> str:
+    """Generate a readable run_id like 'amazon_com_20260313_143022'."""
+    domain = urlparse(url).netloc or "unknown"
+    domain = re.sub(r"^www\.", "", domain)
+    domain = re.sub(r"[^a-zA-Z0-9]", "_", domain).strip("_")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{domain}_{ts}"
 
 
 def bytes_to_state(data: bytes) -> str:

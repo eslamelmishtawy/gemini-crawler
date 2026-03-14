@@ -16,12 +16,10 @@ RUN playwright install chromium --with-deps
 COPY src/ /app/src/
 WORKDIR /app
 
-# Expose Streamlit port
+# Cloud Run uses PORT env var (default 8080)
 EXPOSE 8080
 
-# Run Streamlit
-CMD ["streamlit", "run", "src/ui/app.py", \
-     "--server.port=8080", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--browser.gatherUsageStats=false"]
+CMD ["uvicorn", "src.api:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--timeout-keep-alive", "300"]

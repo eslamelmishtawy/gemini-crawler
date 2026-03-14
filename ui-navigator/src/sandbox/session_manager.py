@@ -4,7 +4,7 @@ from src.sandbox.playwright_session import PlaywrightSession
 class SessionManager:
     """Unified session interface. Routes to Playwright (web) or Appium (mobile)."""
 
-    def __init__(self, platform: str = "web", headless: bool = True):
+    def __init__(self, platform: str = "web", headless: bool = False):
         self.platform = platform
         if platform == "web":
             self._backend = PlaywrightSession(headless=headless)

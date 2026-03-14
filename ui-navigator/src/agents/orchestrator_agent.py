@@ -20,11 +20,12 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.genai import types
 
-from src.utils import strip_code_fences, bytes_to_state
+from src.utils import strip_code_fences, bytes_to_state, generate_run_id
 from src.sandbox.session_manager import SessionManager
 from src.tools.firestore_tools import (
+    create_run, update_run_status,
     create_screen, create_actions_batch,
-    mark_actions_skipped, clear_all,
+    mark_actions_skipped,
 )
 from src.tools.gcs_tools import upload_screenshot
 
@@ -62,7 +63,8 @@ class OrchestratorAgent(BaseAgent):
         target_url = intent["url"]
 
         # --- 2. Setup browser session ---
-        clear_all()
+        run_id = generate_run_id(target_url)
+        create_run(run_id, target_url, platform=self.platform)
         start_time = time.time()
 
         session = SessionManager(
@@ -70,6 +72,10 @@ class OrchestratorAgent(BaseAgent):
         )
         await session.start()
         await session.goto(target_url)
+
+        state["run_id"] = run_id
+        interrupted = False
+        interrupt_reason = ""
 
         try:
             # --- 3. Analyze first screen ---
@@ -100,6 +106,14 @@ class OrchestratorAgent(BaseAgent):
             async for event in self._invoke("exploration_loop", ctx):
                 yield event
 
+        except Exception as e:
+            interrupted = True
+            interrupt_reason = f"{type(e).__name__}: {e}"
+            yield self._msg(
+                ctx,
+                f"Exploration interrupted — {interrupt_reason}. "
+                "Generating report from progress so far...",
+            )
         finally:
             await session.close()
 
@@ -109,26 +123,44 @@ class OrchestratorAgent(BaseAgent):
         total_actions = state.get("total_actions_executed", 0)
         total_edges = state.get("total_edges", 0)
 
-        state["exploration_result"] = {
+        stats = {
             "screens_discovered": len(known_screens),
             "actions_executed": total_actions,
             "nav_edges": total_edges,
+            "elapsed_seconds": round(elapsed, 1),
+        }
+        state["exploration_result"] = {
+            **stats,
+            "run_id": run_id,
             "known_screens": known_screens,
             "history": state.get("history", []),
             "target_url": target_url,
-            "elapsed_seconds": round(elapsed, 1),
+            "interrupted": interrupted,
+            "interrupt_reason": interrupt_reason,
         }
 
+        status = "interrupted" if interrupted else "completed"
+        update_run_status(
+            run_id, status, stats=stats,
+            interrupted=interrupted, interrupt_reason=interrupt_reason,
+        )
         yield self._msg(
             ctx,
-            f"Exploration complete: {len(known_screens)} screens, "
+            f"Exploration {status}: {len(known_screens)} screens, "
             f"{total_actions} actions, {total_edges} edges "
             f"in {elapsed:.1f}s",
         )
 
-        # --- 7. Generate detailed report ---
-        async for event in self._invoke("reporter", ctx):
-            yield event
+        # --- 7. Generate detailed report (even if interrupted) ---
+        try:
+            async for event in self._invoke("reporter", ctx):
+                yield event
+        except Exception as e:
+            yield self._msg(
+                ctx,
+                f"Reporter also failed ({type(e).__name__}: {e}). "
+                "Raw exploration data is still available in Firestore.",
+            )
 
     # ------------------------------------------------------------------
     # First-screen analysis (page_analyzer + dedup)
@@ -154,14 +186,16 @@ class OrchestratorAgent(BaseAgent):
         screen_desc = state["pa_description"]
         actions = state["pa_actions"]  # list of dicts from merger
 
+        run_id = state["run_id"]
+
         screen["url_or_activity"] = current_url
         screen["screenshot_url"] = upload_screenshot(
-            screenshot, screen["screen_id"],
+            screenshot, screen["screen_id"], run_id=run_id,
         )
 
-        create_screen(screen)
+        create_screen(run_id, screen)
         if actions:
-            create_actions_batch(actions)
+            create_actions_batch(run_id, actions)
 
         # Dedup
         state["dedup_actions"] = actions
@@ -170,7 +204,7 @@ class OrchestratorAgent(BaseAgent):
 
         skip_ids = state.get("dedup_skip_ids", [])
         if skip_ids:
-            mark_actions_skipped(skip_ids)
+            mark_actions_skipped(run_id, skip_ids)
 
         state["_first_screen_id"] = screen["screen_id"]
         state["_first_screen_desc"] = screen_desc

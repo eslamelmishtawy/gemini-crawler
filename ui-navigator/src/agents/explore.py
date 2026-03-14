@@ -42,7 +42,8 @@ class ExploreCurrentAgent(BaseAgent):
         known_screens = state["known_screens"]
         history = state["history"]
 
-        screen_actions = get_actions_by_screen(current_screen_id)
+        run_id = state["run_id"]
+        screen_actions = get_actions_by_screen(run_id, current_screen_id)
 
         # --- Skip assertion actions (no UI interaction) ---
         assertion_ids = [
@@ -51,7 +52,7 @@ class ExploreCurrentAgent(BaseAgent):
             and a.get("status") == "pending"
         ]
         if assertion_ids:
-            mark_actions_skipped(assertion_ids)
+            mark_actions_skipped(run_id, assertion_ids)
         screen_actions = [
             a for a in screen_actions
             if a.get("type") != ActionType.ASSERTION.value
@@ -90,7 +91,7 @@ class ExploreCurrentAgent(BaseAgent):
 
             dp = state["dp_result"]  # dict
             action = ActionDoc(**dp)
-            update_action_fill_value(action.action_id, action.fill_value)
+            update_action_fill_value(run_id, action.action_id, action.fill_value)
 
         # --- Navigator executes ---
         screenshot_before = await session.screenshot()
@@ -110,7 +111,7 @@ class ExploreCurrentAgent(BaseAgent):
 
         if not nav_result["success"]:
             update_action_status(
-                action.action_id, "failed",
+                run_id, action.action_id, "failed",
                 outcome={
                     "result": "execution_failed",
                     "error_message": nav_result["action"]["error"] or "",
@@ -131,7 +132,7 @@ class ExploreCurrentAgent(BaseAgent):
         # --- Assertion actions: skip sentinel (no browser action occurred) ---
         if action.type == ActionType.ASSERTION:
             update_action_status(
-                action.action_id, "completed",
+                run_id, action.action_id, "completed",
                 outcome={"result": "same_screen"},
                 executed_at=nav_result["action"].get("executed_at", ""),
             )
@@ -162,7 +163,7 @@ class ExploreCurrentAgent(BaseAgent):
             StateVerdict.MODAL,
         ):
             update_action_status(
-                action.action_id, "completed",
+                run_id, action.action_id, "completed",
                 outcome={"result": verdict["verdict"]},
                 executed_at=(
                     nav_result["action"]["executed_at"]
@@ -173,7 +174,7 @@ class ExploreCurrentAgent(BaseAgent):
 
         if verdict["verdict"] != StateVerdict.NEW_SCREEN:
             update_action_status(
-                action.action_id, "completed",
+                run_id, action.action_id, "completed",
                 outcome={"result": verdict["verdict"]},
                 executed_at=(
                     nav_result["action"]["executed_at"]
@@ -198,6 +199,7 @@ class ExploreCurrentAgent(BaseAgent):
     ):
         """Page analyzer → sentinel match → register/dedup."""
         state = ctx.session.state
+        run_id = state["run_id"]
 
         new_screenshot = await session.screenshot()
         new_page_source = await session.get_page_source()
@@ -226,14 +228,14 @@ class ExploreCurrentAgent(BaseAgent):
             matched_id = match_result["screen_id"]
             if matched_id != current_screen_id:
                 _create_edge(
-                    current_screen_id, matched_id,
+                    run_id, current_screen_id, matched_id,
                     action.action_id, action.type.value,
                     action.element_info.text,
                 )
                 state["total_edges"] = state.get("total_edges", 0) + 1
 
             update_action_status(
-                action.action_id, "completed",
+                run_id, action.action_id, "completed",
                 outcome={
                     "result": "new_screen",
                     "target_screen": matched_id,
@@ -251,12 +253,12 @@ class ExploreCurrentAgent(BaseAgent):
         # --- Register new screen ---
         new_screen["url_or_activity"] = new_url
         new_screen["screenshot_url"] = upload_screenshot(
-            new_screenshot, new_screen["screen_id"],
+            new_screenshot, new_screen["screen_id"], run_id=run_id,
         )
         known_screens[new_screen["screen_id"]] = new_desc
-        create_screen(new_screen)
+        create_screen(run_id, new_screen)
         if new_actions:
-            create_actions_batch(new_actions)
+            create_actions_batch(run_id, new_actions)
 
         # --- Dedup ---
         state["dedup_actions"] = new_actions
@@ -266,17 +268,17 @@ class ExploreCurrentAgent(BaseAgent):
 
         skip_ids = state["dedup_skip_ids"]
         if skip_ids:
-            mark_actions_skipped(skip_ids)
+            mark_actions_skipped(run_id, skip_ids)
 
         _create_edge(
-            current_screen_id, new_screen["screen_id"],
+            run_id, current_screen_id, new_screen["screen_id"],
             action.action_id, action.type.value,
             action.element_info.text,
         )
         state["total_edges"] = state.get("total_edges", 0) + 1
 
         update_action_status(
-            action.action_id, "completed",
+            run_id, action.action_id, "completed",
             outcome={
                 "result": "new_screen",
                 "target_screen": new_screen["screen_id"],
@@ -332,11 +334,12 @@ def _parse_scout(raw: str) -> dict:
 
 
 def _create_edge(
+    run_id: str,
     from_screen: str, to_screen: str,
     via_action: str, action_type: str, action_text: str,
 ):
     edge_id = f"edge_{uuid.uuid4().hex[:8]}"
-    create_nav_edge({
+    create_nav_edge(run_id, {
         "edge_id": edge_id,
         "from_screen": from_screen,
         "to_screen": to_screen,

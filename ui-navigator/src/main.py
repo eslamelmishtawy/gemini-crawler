@@ -40,7 +40,6 @@ async def run_exploration(
     url = target_url or config.TARGET_URL
 
     # Configure the orchestrator
-    root_agent.target_url = url
     root_agent.platform = platform
     root_agent.headless = headless
 

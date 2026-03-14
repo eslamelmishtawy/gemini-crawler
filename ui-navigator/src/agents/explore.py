@@ -89,9 +89,10 @@ class ExploreCurrentAgent(BaseAgent):
             async for event in self._invoke("data_provider", ctx):
                 yield event
 
-            dp = state["dp_result"]  # dict
-            action = ActionDoc(**dp)
-            update_action_fill_value(run_id, action.action_id, action.fill_value)
+            dp = state.get("dp_result")
+            if dp:
+                action = ActionDoc(**dp)
+                update_action_fill_value(run_id, action.action_id, action.fill_value)
 
         # --- Navigator executes ---
         screenshot_before = await session.screenshot()

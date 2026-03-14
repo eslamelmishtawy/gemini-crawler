@@ -19,7 +19,7 @@ from src.config import config
 
 def create_runner() -> InMemoryRunner:
     """Create an ADK InMemoryRunner with the root agent."""
-    return InMemoryRunner(agent=root_agent, app_name="ui-navigator")
+    return InMemoryRunner(agent=root_agent, app_name="agents")
 
 
 async def run_exploration(
@@ -68,7 +68,7 @@ async def run_exploration(
 
     # Retrieve result from session state
     session = await runner.session_service.get_session(
-        app_name="ui-navigator",
+        app_name="agents",
         user_id="explorer",
         session_id="session_1",
     )

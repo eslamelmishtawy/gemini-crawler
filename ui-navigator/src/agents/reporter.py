@@ -377,7 +377,7 @@ def _generate_nav_graph(run_id: str) -> tuple[str, str] | None:
     plt.tight_layout()
 
     # Save to file
-    output_path = os.path.join(os.getcwd(), f"nav_graph_{run_id}.png")
+    output_path = os.path.join("/tmp", f"nav_graph_{run_id}.png")
     fig.savefig(output_path, format="png", dpi=150, bbox_inches="tight", facecolor="white")
 
     # Also capture as base64

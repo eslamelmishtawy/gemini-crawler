@@ -16,3 +16,6 @@ google-cloud-storage>=2.14.0
 python-dotenv>=1.0.0
 Pillow>=10.0.0
 imagehash>=4.3.0
+playwright-stealth>=2.0.2
+networkx>=3.0
+matplotlib>=3.7.0

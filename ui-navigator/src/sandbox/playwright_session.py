@@ -15,7 +15,6 @@ class PlaywrightSession:
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self.headless,
-            channel="chrome",
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",

@@ -8,6 +8,7 @@ Usage:
 
 import asyncio
 import sys
+import uuid
 
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
@@ -45,6 +46,15 @@ async def run_exploration(
 
     runner = create_runner()
 
+    # Unique IDs per run to support concurrent requests
+    user_id = f"user_{uuid.uuid4().hex[:8]}"
+    session_id = f"session_{uuid.uuid4().hex[:8]}"
+
+    # Pre-create session — InMemoryRunner requires it before run_async
+    await runner.session_service.create_session(
+        app_name="agents", user_id=user_id, session_id=session_id,
+    )
+
     print(f"Starting exploration of {url}")
     print(f"Platform: {platform}, Headless: {headless}")
     print("=" * 60)
@@ -53,8 +63,8 @@ async def run_exploration(
     run_config = RunConfig(max_llm_calls=5000)
 
     async for event in runner.run_async(
-        user_id="explorer",
-        session_id="session_1",
+        user_id=user_id,
+        session_id=session_id,
         new_message=types.Content(
             role="user",
             parts=[types.Part(text=f"Explore {url}")],
@@ -69,8 +79,8 @@ async def run_exploration(
     # Retrieve result from session state
     session = await runner.session_service.get_session(
         app_name="agents",
-        user_id="explorer",
-        session_id="session_1",
+        user_id=user_id,
+        session_id=session_id,
     )
     return session.state.get("exploration_result", {})
 
